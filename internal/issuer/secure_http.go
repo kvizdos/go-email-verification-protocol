@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -261,4 +262,131 @@ func validateOutboundIP(ip netip.Addr) error {
 	}
 
 	return nil
+}
+
+const maxJWKSResponseSize = 1 << 20 // 1 MB
+
+var ErrResponseBodyTooLarge = errors.New(
+	"HTTP response body exceeds maximum size",
+)
+
+type maxResponseSizeRoundTripper struct {
+	base     http.RoundTripper
+	maxBytes int64
+}
+
+func (rt *maxResponseSizeRoundTripper) RoundTrip(
+	req *http.Request,
+) (*http.Response, error) {
+	resp, err := rt.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Body == nil {
+		return resp, nil
+	}
+
+	//
+	// If Content-Length is known and already exceeds the limit,
+	// reject immediately without reading the body.
+	//
+	if resp.ContentLength > rt.maxBytes {
+		_ = resp.Body.Close()
+
+		return nil, fmt.Errorf(
+			"%w: content-length=%d max=%d",
+			ErrResponseBodyTooLarge,
+			resp.ContentLength,
+			rt.maxBytes,
+		)
+	}
+
+	//
+	// Content-Length may be missing or untrustworthy, especially
+	// with chunked responses, so enforce the limit while reading too.
+	//
+	resp.Body = &maxBytesReadCloser{
+		body:      resp.Body,
+		remaining: rt.maxBytes,
+	}
+
+	return resp, nil
+}
+
+type maxBytesReadCloser struct {
+	body      io.ReadCloser
+	remaining int64
+}
+
+func (r *maxBytesReadCloser) Read(
+	p []byte,
+) (int, error) {
+	if r.remaining > 0 {
+		if int64(len(p)) > r.remaining {
+			p = p[:r.remaining]
+		}
+
+		n, err := r.body.Read(p)
+
+		r.remaining -= int64(n)
+
+		return n, err
+	}
+
+	//
+	// We've already delivered maxBytes to the caller.
+	//
+	// Probe one additional byte so we can distinguish:
+	//
+	//     exactly maxBytes
+	//
+	// from:
+	//
+	//     more than maxBytes
+	//
+	var probe [1]byte
+
+	n, err := r.body.Read(probe[:])
+
+	if n > 0 {
+		return 0, ErrResponseBodyTooLarge
+	}
+
+	return 0, err
+}
+
+func (r *maxBytesReadCloser) Close() error {
+	return r.body.Close()
+}
+
+func withMaxResponseSize(
+	client *http.Client,
+	maxBytes int64,
+) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	//
+	// Shallow copy so we preserve:
+	//
+	// - Timeout
+	// - CheckRedirect
+	// - Jar
+	// - everything else on the secure client
+	//
+	out := *client
+
+	baseTransport := client.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+
+	out.Transport = &maxResponseSizeRoundTripper{
+		base:     baseTransport,
+		maxBytes: maxBytes,
+	}
+
+	return &out
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -508,7 +509,7 @@ func VerifyKeyBinding(
 		)
 	}
 
-	if claims.Nonce != nonce {
+	if subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 {
 		return fmt.Errorf(
 			"%w: %w: token=%q expected=%q",
 			ErrInvalidKeyBinding,
