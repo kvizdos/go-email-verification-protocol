@@ -240,6 +240,8 @@ type VerifyOptions struct {
 
     // Maximum permitted age of the browser key-binding proof.
     MaxAge time.Duration
+
+   	EVTMaxAge time.Duration
 }
 ```
 

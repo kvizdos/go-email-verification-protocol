@@ -157,6 +157,7 @@ func VerifyIssuerJWT(
 	p *Presentation,
 	config *evp_domain.IssuerConfiguration,
 	keyfunc jwt.Keyfunc,
+	maxAge time.Duration,
 ) (*IssuerClaims, error) {
 	if p == nil {
 		return nil, ErrInvalidPresentation
@@ -187,11 +188,22 @@ func VerifyIssuerJWT(
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"%w: %v",
+			"%w: %w",
 			ErrInvalidIssuerJWT,
 			err,
 		)
 	}
+
+	if token.Header["typ"] != "evt+jwt" {
+		return nil, fmt.Errorf(
+			"%w: invalid token type: %v",
+			ErrInvalidIssuerJWT,
+			token.Header["typ"],
+		)
+	}
+
+	// While spec says KID is required, Chrome does not include it in the token header
+	// as of 151 & therefor it is not required currently.
 
 	if !token.Valid {
 		return nil, ErrInvalidIssuerJWT
@@ -202,6 +214,15 @@ func VerifyIssuerJWT(
 			"%w: %w",
 			ErrInvalidIssuerJWT,
 			ErrMissingIssuedAt,
+		)
+	}
+
+	if maxAge > 0 &&
+		time.Since(claims.IssuedAt.Time) > maxAge {
+		return nil, fmt.Errorf(
+			"%w: %w",
+			ErrInvalidIssuerJWT,
+			ErrTokenExpired,
 		)
 	}
 
@@ -218,32 +239,42 @@ func (c *IssuerClaims) ConfirmationPublicKey() (crypto.PublicKey, string, error)
 		return nil, "", err
 	}
 
-	alg := c.CNF.JWK.Alg
+	jwk := c.CNF.JWK
 
-	if alg == "" {
-		switch c.CNF.JWK.Kty {
-		case "OKP":
-			if c.CNF.JWK.Crv == "Ed25519" {
-				alg = "EdDSA"
-			}
+	expectedAlg := ""
 
-		case "EC":
-			if c.CNF.JWK.Crv == "P-256" {
-				alg = "ES256"
-			}
+	switch jwk.Kty {
+	case "OKP":
+		if jwk.Crv == "Ed25519" {
+			expectedAlg = "EdDSA"
+		}
+
+	case "EC":
+		if jwk.Crv == "P-256" {
+			expectedAlg = "ES256"
 		}
 	}
 
-	if alg == "" {
+	if expectedAlg == "" {
 		return nil, "", fmt.Errorf(
 			"%w: unable to determine signing algorithm for kty=%q crv=%q",
 			ErrInvalidJWK,
-			c.CNF.JWK.Kty,
-			c.CNF.JWK.Crv,
+			jwk.Kty,
+			jwk.Crv,
 		)
 	}
 
-	return key, alg, nil
+	if jwk.Alg != "" && jwk.Alg != expectedAlg {
+		return nil, "", fmt.Errorf(
+			"%w: alg %q is incompatible with kty=%q crv=%q",
+			ErrInvalidJWK,
+			jwk.Alg,
+			jwk.Kty,
+			jwk.Crv,
+		)
+	}
+
+	return key, expectedAlg, nil
 }
 
 func (j JWK) PublicKey() (crypto.PublicKey, error) {
@@ -421,6 +452,7 @@ func VerifyKeyBinding(
 		jwt.WithValidMethods([]string{alg}),
 		jwt.WithAudience(audience),
 		jwt.WithIssuedAt(),
+		jwt.WithLeeway(30*time.Second),
 	)
 	if err != nil {
 		// jwt/v5 performs audience validation itself, so classify it.
@@ -430,6 +462,22 @@ func VerifyKeyBinding(
 				ErrInvalidKeyBinding,
 				ErrAudienceMismatch,
 				err,
+			)
+		}
+
+		if errors.Is(err, jwt.ErrTokenUsedBeforeIssued) {
+			return fmt.Errorf(
+				"%w: %w",
+				ErrInvalidKeyBinding,
+				ErrTokenNotYetValid,
+			)
+		}
+
+		if errors.Is(err, ErrInvalidTokenType) {
+			return fmt.Errorf(
+				"%w: %w",
+				ErrInvalidKeyBinding,
+				ErrInvalidTokenType,
 			)
 		}
 
@@ -499,17 +547,6 @@ func VerifyKeyBinding(
 			ErrTokenExpired,
 			claims.IssuedAt.Time.UTC().Format(time.RFC3339),
 			replayWindow,
-		)
-	}
-
-	const clockSkew = 30 * time.Second
-
-	if claims.IssuedAt.Time.After(now.Add(clockSkew)) {
-		return fmt.Errorf(
-			"%w: %w: issued_at=%s",
-			ErrInvalidKeyBinding,
-			ErrTokenNotYetValid,
-			claims.IssuedAt.Time.UTC().Format(time.RFC3339),
 		)
 	}
 

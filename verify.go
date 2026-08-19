@@ -7,7 +7,11 @@ import (
 	"github.com/kvizdos/go-email-verification-protocol/internal/verifier"
 )
 
-var defaultVerifier = verifier.NewVerifier(context.TODO(), nil)
+/*
+ * Here, context is primarily used for the jwk keyfunc background
+ * refresh system.
+ */
+var defaultVerifier = verifier.NewVerifier(context.Background(), nil)
 
 func Verify(
 	ctx context.Context,

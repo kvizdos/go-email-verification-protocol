@@ -22,8 +22,12 @@ var _ evp_domain.IssuerResolver = (*Resolver)(nil)
 
 const maxResponseSize = 1 << 20 // 1 MB
 
+type txtResolver interface {
+	LookupTXT(ctx context.Context, name string) ([]string, error)
+}
+
 type Resolver struct {
-	resolver *net.Resolver
+	resolver txtResolver
 	client   *http.Client
 
 	ctx context.Context
@@ -239,6 +243,14 @@ func (r *Resolver) DiscoverIssuer(
 func (r *Resolver) Keyfunc(
 	config *evp_domain.IssuerConfiguration,
 ) (jwt.Keyfunc, error) {
+	if config == nil {
+		return nil, errors.New("issuer configuration is required")
+	}
+
+	if config.JWKSURI == "" {
+		return nil, errors.New("jwks_uri is required")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -255,7 +267,6 @@ func (r *Resolver) Keyfunc(
 	}
 
 	r.keyfuncs[config.JWKSURI] = k.Keyfunc
-
 	return k.Keyfunc, nil
 }
 
@@ -298,6 +309,12 @@ func normalizeIssuer(raw string) (string, error) {
 		)
 	}
 
-	// Normalize the simple origin form EVP currently uses.
-	return strings.TrimSuffix(u.String(), "/"), nil
+	if u.Path != "" && u.Path != "/" {
+		return "", errors.New("issuer cannot contain path")
+	}
+
+	u.Host = strings.ToLower(u.Host)
+	u.Path = ""
+
+	return u.String(), nil
 }

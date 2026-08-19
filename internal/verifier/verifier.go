@@ -160,6 +160,7 @@ func (v *verifier) Verify(
 		presentation,
 		config,
 		keyFunc,
+		opts.EVTMaxAge,
 	)
 	if err != nil {
 		return nil, verificationError(
@@ -207,7 +208,7 @@ func (v *verifier) Verify(
 		alg,
 		opts.Nonce,
 		opts.Audience,
-		opts.MaxAge,
+		opts.KBMaxAge,
 	); err != nil {
 		kind := evp_domain.ErrInvalidKeyBinding
 
