@@ -1,5 +1,8 @@
 # go-email-verification-protocol
 
+> [!WARNING]
+> As of Chrome 151, EVP is still opt-in. For production use, ensure that you are registered for the [origin trial](https://developer.chrome.com/origintrials/#/view_trial/10696049115004929). For local testing, enable the Chrome Developer Flag "Email Verification Protocol" (chrome://flags/#email-verification-protocol) 
+
 A small Go verifier for the **Email Verification Protocol (EVP)**.
 
 EVP allows a supported browser and email provider to prove that a user controls an email address without requiring your application to send a verification email, magic link, or one-time code.
