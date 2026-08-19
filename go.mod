@@ -1,6 +1,6 @@
 module github.com/kvizdos/go-email-verification-protocol
 
-go 1.26.3
+go 1.27.0
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.1

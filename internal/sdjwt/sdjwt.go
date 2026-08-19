@@ -529,7 +529,7 @@ func VerifyKeyBinding(
 
 	expectedHash := calculateSDHash(p)
 
-	if claims.SDHash != expectedHash {
+	if subtle.ConstantTimeCompare([]byte(claims.SDHash), []byte(expectedHash)) != 1 {
 		return fmt.Errorf(
 			"%w: expected=%q got=%q",
 			ErrInvalidSDHash,
