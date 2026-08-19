@@ -492,6 +492,14 @@ func VerifyKeyBinding(
 		return ErrInvalidKeyBinding
 	}
 
+	if len(claims.Audience) != 1 {
+		return fmt.Errorf(
+			"%w: %w",
+			ErrInvalidKeyBinding,
+			ErrAudienceMismatch,
+		)
+	}
+
 	if claims.Nonce == "" {
 		return fmt.Errorf(
 			"%w: %w",

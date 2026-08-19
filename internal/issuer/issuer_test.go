@@ -40,13 +40,13 @@ func TestResolveIssuer(t *testing.T) {
 			name:       "valid",
 			domain:     "gmail.com",
 			records:    []string{"iss=accounts.google.com"},
-			wantIssuer: "https://accounts.google.com",
+			wantIssuer: "accounts.google.com",
 		},
 		{
 			name:       "trims whitespace",
 			domain:     " gmail.com ",
 			records:    []string{"  iss=accounts.google.com  "},
-			wantIssuer: "https://accounts.google.com",
+			wantIssuer: "accounts.google.com",
 		},
 		{
 			name:    "empty domain",
@@ -96,7 +96,7 @@ func TestResolveIssuer(t *testing.T) {
 			name:       "normalizes domain to lowercase",
 			domain:     "GMAIL.COM",
 			records:    []string{"iss=accounts.google.com"},
-			wantIssuer: "https://accounts.google.com",
+			wantIssuer: "accounts.google.com",
 		},
 	}
 
@@ -241,15 +241,15 @@ func TestNormalizeIssuer(t *testing.T) {
 	}{
 		{
 			raw:  "accounts.google.com",
-			want: "https://accounts.google.com",
+			want: "accounts.google.com",
 		},
 		{
 			raw:  "https://accounts.google.com",
-			want: "https://accounts.google.com",
+			want: "accounts.google.com",
 		},
 		{
 			raw:  "https://accounts.google.com/",
-			want: "https://accounts.google.com",
+			want: "accounts.google.com",
 		},
 		{
 			raw:     "http://accounts.google.com",
@@ -277,24 +277,24 @@ func TestNormalizeIssuer(t *testing.T) {
 		},
 		{
 			raw:  "  accounts.google.com  ",
-			want: "https://accounts.google.com",
+			want: "accounts.google.com",
 		}, {
 			raw:     "https://example.com/foo",
 			wantErr: true,
 		},
 		{
 			raw:  "https://example.com:8443",
-			want: "https://example.com:8443",
+			want: "example.com:8443",
 		},
 		{
 			raw:  "ACCOUNTS.GOOGLE.COM",
-			want: "https://accounts.google.com",
+			want: "accounts.google.com",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.raw, func(t *testing.T) {
-			got, err := normalizeIssuer(tt.raw)
+			got, err := CanonicalIssuer(tt.raw)
 
 			if tt.wantErr {
 				if err == nil {
@@ -432,6 +432,13 @@ func TestDiscoverIssuer_InvalidJWKS(t *testing.T) {
 			body: `{
 				"jwks_uri": "/jwks",
 				"signing_alg_values_supported": ["EdDSA"]
+			}`,
+		},
+		{
+			name: "none algorithm passed",
+			body: `{
+				"jwks_uri": "https://issuer.example/jwks",
+				"signing_alg_values_supported": ["none"]
 			}`,
 		},
 	}

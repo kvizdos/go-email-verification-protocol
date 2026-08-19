@@ -123,7 +123,37 @@ func (v *verifier) Verify(
 		)
 	}
 
-	if unverified.Issuer != authorizedIssuer.Issuer {
+	tokenIssuer, err := issuer.CanonicalIssuer(
+		unverified.Issuer,
+	)
+	if err != nil {
+		return nil, verificationError(
+			"issuer_authorization",
+			evp_domain.ErrUnauthorizedIssuer,
+			fmt.Errorf(
+				"invalid token issuer %q: %w",
+				unverified.Issuer,
+				err,
+			),
+		)
+	}
+
+	authorizedIssuerID, err := issuer.CanonicalIssuer(
+		authorizedIssuer.Issuer,
+	)
+	if err != nil {
+		return nil, verificationError(
+			"issuer_authorization",
+			evp_domain.ErrUnauthorizedIssuer,
+			fmt.Errorf(
+				"invalid authorized issuer %q: %w",
+				authorizedIssuer.Issuer,
+				err,
+			),
+		)
+	}
+
+	if tokenIssuer != authorizedIssuerID {
 		return nil, verificationError(
 			"issuer_authorization",
 			evp_domain.ErrUnauthorizedIssuer,

@@ -26,24 +26,50 @@ type txtResolver interface {
 	LookupTXT(ctx context.Context, name string) ([]string, error)
 }
 
+const (
+	defaultKeyfuncCacheSize = 128
+	defaultKeyfuncIdleTTL   = 1 * time.Hour
+)
+
+type keyfuncCacheEntry struct {
+	keyfunc  jwt.Keyfunc
+	cancel   context.CancelFunc
+	lastUsed time.Time
+}
+
+type keyfuncLoad struct {
+	done    chan struct{}
+	keyfunc jwt.Keyfunc
+	err     error
+}
+
 type Resolver struct {
 	resolver txtResolver
 	client   *http.Client
 
 	ctx context.Context
 
-	mu       sync.Mutex
-	keyfuncs map[string]jwt.Keyfunc
+	mu sync.Mutex
+
+	keyfuncs map[string]*keyfuncCacheEntry
+	loads    map[string]*keyfuncLoad
+
+	keyfuncCacheSize int
+	keyfuncIdleTTL   time.Duration
 }
 
 func NewResolver(ctx context.Context) *Resolver {
 	return &Resolver{
 		resolver: net.DefaultResolver,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		ctx:      ctx,
-		keyfuncs: make(map[string]jwt.Keyfunc),
+		client:   newSecureHTTPClient(),
+
+		ctx: ctx,
+
+		keyfuncs: make(map[string]*keyfuncCacheEntry),
+		loads:    make(map[string]*keyfuncLoad),
+
+		keyfuncCacheSize: defaultKeyfuncCacheSize,
+		keyfuncIdleTTL:   defaultKeyfuncIdleTTL,
 	}
 }
 
@@ -119,18 +145,16 @@ func (r *Resolver) ResolveIssuer(
 		)
 	}
 
-	issuer, err := normalizeIssuer(rawIssuer)
-	if err != nil {
+	if _, err := CanonicalIssuer(rawIssuer); err != nil {
 		return nil, fmt.Errorf(
-			"%w: invalid issuer %q: %w",
+			"%w: invalid issuer %q: %v",
 			ErrNoIssuerFound,
 			rawIssuer,
 			err,
 		)
 	}
-
 	return &evp_domain.IssuerMetadata{
-		Issuer: issuer,
+		Issuer: rawIssuer,
 	}, nil
 
 }
@@ -143,24 +167,29 @@ func (r *Resolver) DiscoverIssuer(
 		return nil, errors.New("issuer is required")
 	}
 
-	issuerURL, err := url.Parse(issuer.Issuer)
+	iss, err := CanonicalIssuer(issuer.Issuer)
 	if err != nil {
-		return nil, fmt.Errorf("invalid issuer URL: %w", err)
+		return nil, fmt.Errorf(
+			"invalid issuer %q: %w",
+			issuer.Issuer,
+			err,
+		)
 	}
 
-	if issuerURL.Scheme != "https" {
-		return nil, errors.New("issuer must use https")
+	discoveryURL, err := url.Parse("https://" + iss + "/.well-known/email-verification")
+	if err != nil {
+		return nil, fmt.Errorf(
+			"invalid issuer discovery URL: %w",
+			err,
+		)
 	}
 
-	if issuerURL.Host == "" {
-		return nil, errors.New("issuer host is required")
+	if err := validateOutboundURL(discoveryURL); err != nil {
+		return nil, fmt.Errorf(
+			"invalid issuer discovery URL: %w",
+			err,
+		)
 	}
-
-	discoveryURL := issuerURL.ResolveReference(
-		&url.URL{
-			Path: "/.well-known/email-verification",
-		},
-	)
 
 	req, err := http.NewRequestWithContext(
 		ctx,
@@ -193,13 +222,28 @@ func (r *Resolver) DiscoverIssuer(
 		)
 	}
 
+	body, err := io.ReadAll(
+		io.LimitReader(
+			resp.Body,
+			maxResponseSize+1,
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"read issuer configuration: %w",
+			err,
+		)
+	}
+
+	if len(body) > maxResponseSize {
+		return nil, errors.New(
+			"issuer configuration exceeds maximum size",
+		)
+	}
+
 	var config evp_domain.IssuerConfiguration
 
-	decoder := json.NewDecoder(
-		io.LimitReader(resp.Body, maxResponseSize),
-	)
-
-	if err := decoder.Decode(&config); err != nil {
+	if err := json.Unmarshal(body, &config); err != nil {
 		return nil, fmt.Errorf(
 			"decode issuer configuration: %w",
 			err,
@@ -222,6 +266,17 @@ func (r *Resolver) DiscoverIssuer(
 			present.
 		*/
 		config.SigningAlgorithmsSupported = []string{"EdDSA"}
+	} else {
+		for _, alg := range config.SigningAlgorithmsSupported {
+			/*
+			 * signing_alg_values_supported - OPTIONAL. JSON array containing a list of the signing algorithms ("alg" values) supported by the issuer for both HTTP Message Signatures and issued EVTs. Algorithm identifiers MUST be from the IANA "JSON Web Signature and Encryption Algorithms" registry. If omitted, "EdDSA" is the default. "EdDSA" SHOULD be included in the supported algorithms list. The value "none" MUST NOT be used.
+			 */
+			if strings.ToLower(alg) == "none" {
+				return nil, errors.New(
+					"none algorithm is strictly forbidden",
+				)
+			}
+		}
 	}
 	jwksURL, err := url.Parse(config.JWKSURI)
 	if err != nil {
@@ -230,10 +285,10 @@ func (r *Resolver) DiscoverIssuer(
 			err,
 		)
 	}
-
-	if jwksURL.Scheme != "https" || jwksURL.Host == "" {
-		return nil, errors.New(
-			"jwks_uri must be an absolute HTTPS URL",
+	if err := validateOutboundURL(jwksURL); err != nil {
+		return nil, fmt.Errorf(
+			"invalid jwks_uri: %w",
+			err,
 		)
 	}
 
@@ -244,44 +299,193 @@ func (r *Resolver) Keyfunc(
 	config *evp_domain.IssuerConfiguration,
 ) (jwt.Keyfunc, error) {
 	if config == nil {
-		return nil, errors.New("issuer configuration is required")
+		return nil, errors.New(
+			"issuer configuration is required",
+		)
 	}
 
 	if config.JWKSURI == "" {
-		return nil, errors.New("jwks_uri is required")
+		return nil, errors.New(
+			"jwks_uri is required",
+		)
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	uri := config.JWKSURI
+	now := time.Now()
 
-	if keyFunc, ok := r.keyfuncs[config.JWKSURI]; ok {
+	r.mu.Lock()
+
+	//
+	// Opportunistically remove entries which haven't been used
+	// within the idle TTL.
+	//
+	r.removeExpiredKeyfuncsLocked(now)
+
+	//
+	// Cache hit.
+	//
+	if entry, ok := r.keyfuncs[uri]; ok {
+		entry.lastUsed = now
+
+		keyFunc := entry.keyfunc
+
+		r.mu.Unlock()
+
 		return keyFunc, nil
 	}
 
-	k, err := keyfunc.NewDefaultCtx(
-		r.ctx,
-		[]string{config.JWKSURI},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load issuer JWKS: %w", err)
+	//
+	// Someone else is already fetching this exact JWKS URI.
+	//
+	// Wait for that fetch instead of creating another HTTP request
+	// and another refresh goroutine.
+	//
+	if load, ok := r.loads[uri]; ok {
+		r.mu.Unlock()
+
+		select {
+		case <-load.done:
+			return load.keyfunc, load.err
+
+		case <-r.ctx.Done():
+			return nil, r.ctx.Err()
+		}
 	}
 
-	r.keyfuncs[config.JWKSURI] = k.Keyfunc
-	return k.Keyfunc, nil
+	//
+	// Mark this URI as loading.
+	//
+	load := &keyfuncLoad{
+		done: make(chan struct{}),
+	}
+
+	r.loads[uri] = load
+
+	r.mu.Unlock()
+
+	//
+	// IMPORTANT:
+	//
+	// Give each cached keyfunc its own context. Eviction/expiration
+	// can then stop its refresh goroutine without affecting any
+	// other issuer.
+	//
+	entryCtx, cancel := context.WithCancel(r.ctx)
+
+	k, err := keyfunc.NewDefaultOverrideCtx(
+		entryCtx,
+		[]string{uri},
+		keyfunc.Override{
+			Client:      r.client,
+			HTTPTimeout: 10 * time.Second,
+		},
+	)
+
+	if err != nil {
+		cancel()
+
+		err = fmt.Errorf(
+			"failed to load issuer JWKS: %w",
+			err,
+		)
+	}
+
+	r.mu.Lock()
+
+	delete(r.loads, uri)
+
+	if err != nil {
+		load.err = err
+
+		close(load.done)
+
+		r.mu.Unlock()
+
+		cancel()
+		return nil, err
+	}
+
+	//
+	// Make room before adding the new entry.
+	//
+	r.evictKeyfuncsLocked(1)
+
+	entry := &keyfuncCacheEntry{
+		keyfunc:  k.Keyfunc,
+		cancel:   cancel,
+		lastUsed: now,
+	}
+
+	r.keyfuncs[uri] = entry
+
+	load.keyfunc = entry.keyfunc
+
+	close(load.done)
+
+	r.mu.Unlock()
+
+	return entry.keyfunc, nil
 }
 
-func normalizeIssuer(raw string) (string, error) {
+func (r *Resolver) removeExpiredKeyfuncsLocked(
+	now time.Time,
+) {
+	if r.keyfuncIdleTTL <= 0 {
+		return
+	}
+
+	for uri, entry := range r.keyfuncs {
+		if now.Sub(entry.lastUsed) <= r.keyfuncIdleTTL {
+			continue
+		}
+
+		delete(r.keyfuncs, uri)
+
+		//
+		// Stops keyfunc's background refresh goroutine.
+		//
+		entry.cancel()
+	}
+}
+
+func (r *Resolver) evictKeyfuncsLocked(
+	needed int,
+) {
+	if r.keyfuncCacheSize <= 0 {
+		return
+	}
+
+	for len(r.keyfuncs)+needed > r.keyfuncCacheSize {
+		var (
+			oldestURI   string
+			oldestEntry *keyfuncCacheEntry
+		)
+
+		for uri, entry := range r.keyfuncs {
+			if oldestEntry == nil ||
+				entry.lastUsed.Before(oldestEntry.lastUsed) {
+				oldestURI = uri
+				oldestEntry = entry
+			}
+		}
+
+		if oldestEntry == nil {
+			return
+		}
+
+		delete(r.keyfuncs, oldestURI)
+
+		//
+		// This is the critical part. Don't merely remove it from
+		// the map: terminate the refresh goroutine it owns.
+		//
+		oldestEntry.cancel()
+	}
+}
+
+func CanonicalIssuer(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 
-	//
-	// EVP DNS currently returns:
-	//
-	//     iss=accounts.google.com
-	//
-	// while the EVT uses:
-	//
-	//     iss=https://accounts.google.com
-	//
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
 	}
@@ -296,25 +500,15 @@ func normalizeIssuer(raw string) (string, error) {
 	}
 
 	if u.Host == "" {
-		return "", errors.New("issuer host is missing")
+		return "", errors.New("issuer host is required")
 	}
 
-	if u.User != nil {
-		return "", errors.New("issuer cannot contain user info")
+	if u.User != nil ||
+		(u.Path != "" && u.Path != "/") ||
+		u.RawQuery != "" ||
+		u.Fragment != "" {
+		return "", errors.New("invalid issuer")
 	}
 
-	if u.RawQuery != "" || u.Fragment != "" {
-		return "", errors.New(
-			"issuer cannot contain query or fragment",
-		)
-	}
-
-	if u.Path != "" && u.Path != "/" {
-		return "", errors.New("issuer cannot contain path")
-	}
-
-	u.Host = strings.ToLower(u.Host)
-	u.Path = ""
-
-	return u.String(), nil
+	return strings.ToLower(u.Host), nil
 }
