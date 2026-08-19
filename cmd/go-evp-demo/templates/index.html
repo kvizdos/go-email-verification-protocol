@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Go EVP Demo</title>
+
+    {{if .OriginTrial}}
+    <meta
+        http-equiv="origin-trial"
+        content="{{.OriginTrial}}">
+    {{end}}
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 900px;
+            margin: 60px auto;
+            padding: 0 20px;
+            line-height: 1.5;
+        }
+
+        label {
+            display: block;
+            margin-top: 20px;
+            font-weight: 600;
+        }
+
+        input,
+        textarea,
+        button {
+            box-sizing: border-box;
+            font: inherit;
+        }
+
+        input[type="email"],
+        textarea {
+            width: 100%;
+            margin-top: 6px;
+            padding: 10px;
+        }
+
+        textarea {
+            min-height: 240px;
+            font-family: monospace;
+            overflow-wrap: anywhere;
+        }
+
+        button {
+            margin-top: 16px;
+            padding: 10px 16px;
+            cursor: pointer;
+        }
+
+        .secondary {
+            margin-left: 8px;
+        }
+
+        .meta {
+            margin-top: 24px;
+            padding: 12px;
+            background: #f5f5f5;
+            font-family: monospace;
+            overflow-wrap: anywhere;
+        }
+
+        .status {
+            margin-top: 12px;
+            font-weight: 600;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Go Email Verification Protocol Demo</h1>
+
+    <strong>If you are seeing this before EVP is trial-free, ensure you set the <span style="color: blue">chrome://flags/#email-verification-protocol</span> to "Enabled"</strong>
+
+    <p>
+        Enter an email address. Chrome will attempt EVP verification.
+        The first submit captures the browser-generated token so you
+        can inspect or modify it before sending it to the Go verifier.
+    </p>
+
+    <form
+        id="evp-form"
+        method="post"
+        action="/verify">
+
+        <label for="email">
+            Email address
+        </label>
+
+        <input
+            id="email"
+            name="email"
+            type="email"
+            autocomplete="email"
+            required>
+
+        <!--
+            Chrome fills this immediately before the submit event.
+        -->
+        <input
+            id="browser-evp-token"
+            type="hidden"
+            autocomplete="email-verification-token"
+            nonce="{{.Nonce}}">
+
+        <!--
+            This is the actual value eventually POSTed to Go.
+            JS copies the browser-generated token here.
+        -->
+        <input
+            id="submitted-evp-token"
+            type="hidden"
+            name="evp_token">
+
+        <button
+            id="capture-button"
+            type="submit">
+            Capture Browser EVP Token
+        </button>
+
+        <section id="token-section" class="hidden">
+            <label for="token-editor">
+                EVP token
+            </label>
+
+            <textarea
+                id="token-editor"
+                spellcheck="false"></textarea>
+
+            <div class="status" id="token-status"></div>
+
+            <button
+                id="verify-button"
+                type="button">
+                Verify This Token
+            </button>
+
+            <button
+                id="recapture-button"
+                class="secondary"
+                type="submit">
+                Recapture From Browser
+            </button>
+        </section>
+    </form>
+
+    <div class="meta">
+        <div>
+            <strong>Nonce:</strong>
+            {{.Nonce}}
+        </div>
+
+        <div>
+            <strong>Audience:</strong>
+            {{.Audience}}
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById("evp-form");
+
+        const browserToken =
+            document.getElementById("browser-evp-token");
+
+        const submittedToken =
+            document.getElementById("submitted-evp-token");
+
+        const tokenSection =
+            document.getElementById("token-section");
+
+        const tokenEditor =
+            document.getElementById("token-editor");
+
+        const tokenStatus =
+            document.getElementById("token-status");
+
+        const verifyButton =
+            document.getElementById("verify-button");
+
+        let allowRealSubmit = false;
+
+        form.addEventListener("submit", (event) => {
+            if (allowRealSubmit) {
+                return;
+            }
+
+            /*
+             * EVP fills browserToken.value before this submit
+             * event fires.
+             *
+             * Prevent navigation so we can expose the value.
+             */
+            event.preventDefault();
+
+            const token = browserToken.value;
+
+            tokenSection.classList.remove("hidden");
+
+            tokenEditor.value = token;
+
+            if (token) {
+                tokenStatus.textContent =
+                    "Browser supplied an EVP token. You can edit it before verification.";
+            } else {
+                tokenStatus.textContent =
+                    "No EVP token was supplied by the browser.";
+            }
+        });
+
+        verifyButton.addEventListener("click", () => {
+            submittedToken.value = tokenEditor.value.trim();
+
+            allowRealSubmit = true;
+
+            /*
+             * form.submit() intentionally bypasses the submit
+             * event so Chrome doesn't replace our edited token
+             * during this second step.
+             */
+            form.submit();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>EVP Verification Result</title>
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 900px;
+            margin: 60px auto;
+            padding: 0 20px;
+            line-height: 1.5;
+        }
+
+        .success,
+        .error,
+        .details {
+            padding: 16px;
+            margin: 20px 0;
+        }
+
+        .success {
+            background: #eef9ee;
+        }
+
+        .error {
+            background: #fff0f0;
+        }
+
+        .details {
+            background: #f5f5f5;
+        }
+
+        dt {
+            font-weight: 700;
+            margin-top: 12px;
+        }
+
+        dd {
+            margin-left: 0;
+            overflow-wrap: anywhere;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 250px;
+            box-sizing: border-box;
+            font-family: monospace;
+            margin-top: 6px;
+        }
+
+        a {
+            display: inline-block;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>EVP Verification Result</h1>
+
+    {{if .Success}}
+        <div class="success">
+            <strong>EVP verification succeeded.</strong>
+        </div>
+    {{else}}
+        <div class="error">
+            <strong>EVP verification failed.</strong>
+
+            {{if .Error}}
+                <div>{{.Error}}</div>
+            {{end}}
+        </div>
+    {{end}}
+
+    <div class="details">
+        <dl>
+            <dt>Verified</dt>
+            <dd>{{.Verified}}</dd>
+
+            <dt>Email</dt>
+            <dd>{{.Email}}</dd>
+
+            <dt>Issuer</dt>
+            <dd>{{.Issuer}}</dd>
+
+            <dt>Expected nonce</dt>
+            <dd>{{.Nonce}}</dd>
+
+            <dt>Expected audience</dt>
+            <dd>{{.Audience}}</dd>
+        </dl>
+    </div>
+
+    <label for="token">
+        Submitted EVP token
+    </label>
+
+    <textarea
+        id="token"
+        readonly>{{.Token}}</textarea>
+
+    <br>
+
+    <a href="/">Try another verification</a>
+</body>
+</html>

@@ -1,3 +1,11 @@
 module github.com/kvizdos/go-email-verification-protocol
 
 go 1.26.3
+
+require (
+	github.com/MicahParks/jwkset v0.11.1 // indirect
+	github.com/MicahParks/keyfunc/v2 v2.1.0 // indirect
+	github.com/MicahParks/keyfunc/v3 v3.8.1 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
+	golang.org/x/time v0.15.0 // indirect
+)
